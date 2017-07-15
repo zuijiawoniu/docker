@@ -1,49 +1,41 @@
 package chrootarchive
 
 import (
-	"bytes"
-	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
-	"syscall"
 
 	"github.com/docker/docker/pkg/archive"
-	"github.com/docker/docker/pkg/reexec"
+	"github.com/docker/docker/pkg/idtools"
 )
 
-var chrootArchiver = &archive.Archiver{Untar: Untar}
-
-func chroot(path string) error {
-	if err := syscall.Chroot(path); err != nil {
-		return err
+// NewArchiver returns a new Archiver which uses chrootarchive.Untar
+func NewArchiver(idMappings *idtools.IDMappings) *archive.Archiver {
+	if idMappings == nil {
+		idMappings = &idtools.IDMappings{}
 	}
-	return syscall.Chdir("/")
+	return &archive.Archiver{Untar: Untar, IDMappings: idMappings}
 }
 
-func untar() {
-	runtime.LockOSThread()
-	flag.Parse()
-	if err := chroot(flag.Arg(0)); err != nil {
-		fatal(err)
-	}
-	var options *archive.TarOptions
-	if err := json.NewDecoder(strings.NewReader(flag.Arg(1))).Decode(&options); err != nil {
-		fatal(err)
-	}
-	if err := archive.Unpack(os.Stdin, "/", options); err != nil {
-		fatal(err)
-	}
-	// fully consume stdin in case it is zero padded
-	flush(os.Stdin)
-	os.Exit(0)
-}
-
+// Untar reads a stream of bytes from `archive`, parses it as a tar archive,
+// and unpacks it into the directory at `dest`.
+// The archive may be compressed with one of the following algorithms:
+//  identity (uncompressed), gzip, bzip2, xz.
 func Untar(tarArchive io.Reader, dest string, options *archive.TarOptions) error {
+	return untarHandler(tarArchive, dest, options, true)
+}
+
+// UntarUncompressed reads a stream of bytes from `archive`, parses it as a tar archive,
+// and unpacks it into the directory at `dest`.
+// The archive must be an uncompressed stream.
+func UntarUncompressed(tarArchive io.Reader, dest string, options *archive.TarOptions) error {
+	return untarHandler(tarArchive, dest, options, false)
+}
+
+// Handler for teasing out the automatic decompression
+func untarHandler(tarArchive io.Reader, dest string, options *archive.TarOptions, decompress bool) error {
 	if tarArchive == nil {
 		return fmt.Errorf("Empty archive")
 	}
@@ -54,58 +46,25 @@ func Untar(tarArchive io.Reader, dest string, options *archive.TarOptions) error
 		options.ExcludePatterns = []string{}
 	}
 
-	var (
-		buf bytes.Buffer
-		enc = json.NewEncoder(&buf)
-	)
-	if err := enc.Encode(options); err != nil {
-		return fmt.Errorf("Untar json encode: %v", err)
-	}
+	idMappings := idtools.NewIDMappingsFromMaps(options.UIDMaps, options.GIDMaps)
+	rootIDs := idMappings.RootPair()
+
+	dest = filepath.Clean(dest)
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		if err := os.MkdirAll(dest, 0777); err != nil {
+		if err := idtools.MkdirAllAndChownNew(dest, 0755, rootIDs); err != nil {
 			return err
 		}
 	}
-	dest = filepath.Clean(dest)
-	decompressedArchive, err := archive.DecompressStream(tarArchive)
-	if err != nil {
-		return err
+
+	r := ioutil.NopCloser(tarArchive)
+	if decompress {
+		decompressedArchive, err := archive.DecompressStream(tarArchive)
+		if err != nil {
+			return err
+		}
+		defer decompressedArchive.Close()
+		r = decompressedArchive
 	}
-	defer decompressedArchive.Close()
 
-	cmd := reexec.Command("docker-untar", dest, buf.String())
-	cmd.Stdin = decompressedArchive
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("Untar %s %s", err, out)
-	}
-	return nil
-}
-
-func TarUntar(src, dst string) error {
-	return chrootArchiver.TarUntar(src, dst)
-}
-
-// CopyWithTar creates a tar archive of filesystem path `src`, and
-// unpacks it at filesystem path `dst`.
-// The archive is streamed directly with fixed buffering and no
-// intermediary disk IO.
-func CopyWithTar(src, dst string) error {
-	return chrootArchiver.CopyWithTar(src, dst)
-}
-
-// CopyFileWithTar emulates the behavior of the 'cp' command-line
-// for a single file. It copies a regular file from path `src` to
-// path `dst`, and preserves all its metadata.
-//
-// If `dst` ends with a trailing slash '/', the final destination path
-// will be `dst/base(src)`.
-func CopyFileWithTar(src, dst string) (err error) {
-	return chrootArchiver.CopyFileWithTar(src, dst)
-}
-
-// UntarPath is a convenience function which looks for an archive
-// at filesystem path `src`, and unpacks it at `dst`.
-func UntarPath(src, dst string) error {
-	return chrootArchiver.UntarPath(src, dst)
+	return invokeUnpack(r, dest, options)
 }

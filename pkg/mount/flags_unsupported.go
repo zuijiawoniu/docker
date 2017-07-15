@@ -1,7 +1,8 @@
-// +build !linux,!freebsd freebsd,!cgo
+// +build !linux,!freebsd freebsd,!cgo solaris,!cgo
 
 package mount
 
+// These flags are unsupported.
 const (
 	BIND        = 0
 	DIRSYNC     = 0
@@ -26,4 +27,5 @@ const (
 	STRICTATIME = 0
 	SYNCHRONOUS = 0
 	RDONLY      = 0
+	mntDetach   = 0
 )

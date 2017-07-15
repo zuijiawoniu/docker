@@ -1,61 +1,31 @@
 package api
 
 import (
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
-	"mime"
 	"os"
-	"path"
-	"strings"
+	"path/filepath"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/docker/docker/engine"
-	"github.com/docker/docker/pkg/parsers"
-	"github.com/docker/docker/pkg/version"
+	"github.com/docker/docker/pkg/ioutils"
+	"github.com/docker/docker/pkg/system"
 	"github.com/docker/libtrust"
 )
 
+// Common constants for daemon and client.
 const (
-	APIVERSION            version.Version = "1.16"
-	DEFAULTHTTPHOST                       = "127.0.0.1"
-	DEFAULTUNIXSOCKET                     = "/var/run/docker.sock"
-	DefaultDockerfileName string          = "Dockerfile"
+	// DefaultVersion of Current REST API
+	DefaultVersion string = "1.31"
+
+	// NoBaseImageSpecifier is the symbol used by the FROM
+	// command to specify that no base image is to be used.
+	NoBaseImageSpecifier string = "scratch"
 )
-
-func ValidateHost(val string) (string, error) {
-	host, err := parsers.ParseHost(DEFAULTHTTPHOST, DEFAULTUNIXSOCKET, val)
-	if err != nil {
-		return val, err
-	}
-	return host, nil
-}
-
-//TODO remove, used on < 1.5 in getContainersJSON
-func DisplayablePorts(ports *engine.Table) string {
-	result := []string{}
-	ports.SetKey("PublicPort")
-	ports.Sort()
-	for _, port := range ports.Data {
-		if port.Get("IP") == "" {
-			result = append(result, fmt.Sprintf("%d/%s", port.GetInt("PrivatePort"), port.Get("Type")))
-		} else {
-			result = append(result, fmt.Sprintf("%s:%d->%d/%s", port.Get("IP"), port.GetInt("PublicPort"), port.GetInt("PrivatePort"), port.Get("Type")))
-		}
-	}
-	return strings.Join(result, ", ")
-}
-
-func MatchesContentType(contentType, expectedType string) bool {
-	mimetype, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		log.Errorf("Error parsing media type: %s error: %s", contentType, err.Error())
-	}
-	return err == nil && mimetype == expectedType
-}
 
 // LoadOrCreateTrustKey attempts to load the libtrust key at the given path,
 // otherwise generates a new one
 func LoadOrCreateTrustKey(trustKeyPath string) (libtrust.PrivateKey, error) {
-	err := os.MkdirAll(path.Dir(trustKeyPath), 0700)
+	err := system.MkdirAll(filepath.Dir(trustKeyPath), 0700, "")
 	if err != nil {
 		return nil, err
 	}
@@ -65,11 +35,31 @@ func LoadOrCreateTrustKey(trustKeyPath string) (libtrust.PrivateKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Error generating key: %s", err)
 		}
-		if err := libtrust.SaveKey(trustKeyPath, trustKey); err != nil {
+		encodedKey, err := serializePrivateKey(trustKey, filepath.Ext(trustKeyPath))
+		if err != nil {
+			return nil, fmt.Errorf("Error serializing key: %s", err)
+		}
+		if err := ioutils.AtomicWriteFile(trustKeyPath, encodedKey, os.FileMode(0600)); err != nil {
 			return nil, fmt.Errorf("Error saving key file: %s", err)
 		}
 	} else if err != nil {
-		return nil, fmt.Errorf("Error loading key file: %s", err)
+		return nil, fmt.Errorf("Error loading key file %s: %s", trustKeyPath, err)
 	}
 	return trustKey, nil
+}
+
+func serializePrivateKey(key libtrust.PrivateKey, ext string) (encoded []byte, err error) {
+	if ext == ".json" || ext == ".jwk" {
+		encoded, err = json.Marshal(key)
+		if err != nil {
+			return nil, fmt.Errorf("unable to encode private key JWK: %s", err)
+		}
+	} else {
+		pemBlock, err := key.PEMBlock()
+		if err != nil {
+			return nil, fmt.Errorf("unable to encode private key PEM: %s", err)
+		}
+		encoded = pem.EncodeToMemory(pemBlock)
+	}
+	return
 }

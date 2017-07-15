@@ -2,30 +2,29 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"os/exec"
-	"testing"
+
+	"github.com/docker/docker/integration-cli/checker"
+	"github.com/go-check/check"
 )
 
-func TestLoginWithoutTTY(t *testing.T) {
+func (s *DockerSuite) TestLoginWithoutTTY(c *check.C) {
 	cmd := exec.Command(dockerBinary, "login")
 
-	// create a buffer with text then a new line as a return
-	buf := bytes.NewBuffer([]byte("buffer test string \n"))
-
-	// use a pipe for stdin and manually copy the data so that
-	// the process does not get the TTY
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// copy the bytes into the commands stdin along with a new line
-	go io.Copy(in, buf)
+	// Send to stdin so the process does not get the TTY
+	cmd.Stdin = bytes.NewBufferString("buffer test string \n")
 
 	// run the command and block until it's done
-	if err := cmd.Run(); err == nil {
-		t.Fatal("Expected non nil err when loginning in & TTY not available")
-	}
+	err := cmd.Run()
+	c.Assert(err, checker.NotNil) //"Expected non nil err when logging in & TTY not available"
+}
 
-	logDone("login - login without TTY")
+func (s *DockerRegistryAuthHtpasswdSuite) TestLoginToPrivateRegistry(c *check.C) {
+	// wrong credentials
+	out, _, err := dockerCmdWithError("login", "-u", s.reg.Username(), "-p", "WRONGPASSWORD", privateRegistryURL)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "401 Unauthorized")
+
+	// now it's fine
+	dockerCmd(c, "login", "-u", s.reg.Username(), "-p", s.reg.Password(), privateRegistryURL)
 }

@@ -3,7 +3,7 @@
 # AUTHOR:         Jessica Frazelle <jess@docker.com>
 # COMMENTS:
 #   This file describes how to build a gparted container with all
-#   dependencies installed. It uses native X11 unix socket. 
+#   dependencies installed. It uses native X11 unix socket.
 #   Tested on Debian Jessie
 # USAGE:
 #   # Download gparted Dockerfile
@@ -19,7 +19,7 @@
 
 # Base docker image
 FROM debian:jessie
-MAINTAINER Jessica Frazelle <jess@docker.com>
+LABEL maintainer Jessica Frazelle <jess@docker.com>
 
 # Install Gparted and its dependencies
 RUN apt-get update && apt-get install -y \
